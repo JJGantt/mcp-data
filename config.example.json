@@ -1,0 +1,12 @@
+{
+  "machine_name": "my-machine",
+  "data_dir": "~/my-data",
+
+  "peer": {
+    "local_ip": "",
+    "tailscale_ip": "",
+    "ssh_user": "",
+    "ssh_key": "~/.ssh/id_ed25519",
+    "data_dir": ""
+  }
+}
