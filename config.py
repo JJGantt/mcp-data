@@ -43,8 +43,12 @@ LISTS_DIR = DATA_DIR / "lists"
 NOTES_DIR = DATA_DIR / "notes"
 REMINDERS_DIR = DATA_DIR / "reminders"
 REMINDERS_FILE = REMINDERS_DIR / "reminders.json"
+HEALTH_DIR = DATA_DIR / "health"
+HEALTH_PROFILE = HEALTH_DIR / "profile.json"
+HEALTH_WORKOUTS = HEALTH_DIR / "workouts.json"
 
 # Ensure directories exist
 LISTS_DIR.mkdir(parents=True, exist_ok=True)
 NOTES_DIR.mkdir(parents=True, exist_ok=True)
 REMINDERS_DIR.mkdir(parents=True, exist_ok=True)
+HEALTH_DIR.mkdir(parents=True, exist_ok=True)

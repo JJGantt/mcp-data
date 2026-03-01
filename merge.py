@@ -21,7 +21,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from config import CONFIG, DATA_DIR, LISTS_DIR, NOTES_DIR, REMINDERS_DIR
+from config import CONFIG, DATA_DIR, LISTS_DIR, NOTES_DIR, REMINDERS_DIR, HEALTH_DIR
 
 PEER = CONFIG.get("peer", {})
 SSH_USER = PEER.get("ssh_user", "")
@@ -225,6 +225,22 @@ def main():
 
     # Merge reminders
     _sync_list(host, "reminders/reminders.json", "reminders")
+
+    # Merge health files (last-writer-wins, same as notes)
+    for health_file in sorted(HEALTH_DIR.glob("*.json")):
+        rel = f"health/{health_file.name}"
+        _sync_note(host, rel, f"health/{health_file.stem}")
+
+    # Check for health files that exist on remote but not locally
+    try:
+        remote_health = _ssh_cmd(host, f"ls {REMOTE_DATA_DIR}/health/*.json 2>/dev/null || true")
+        for line in remote_health.strip().splitlines():
+            name = Path(line).name
+            if not (HEALTH_DIR / name).exists():
+                rel = f"health/{name}"
+                _sync_note(host, rel, f"health/{Path(name).stem}")
+    except RuntimeError:
+        pass
 
     print("Done.")
 

@@ -39,7 +39,7 @@ from mcp.server import Server
 import mcp.server.stdio
 import mcp.types as types
 
-from config import LISTS_DIR, NOTES_DIR, REMINDERS_FILE
+from config import LISTS_DIR, NOTES_DIR, REMINDERS_FILE, HEALTH_PROFILE, HEALTH_WORKOUTS
 
 log = logging.getLogger(__name__)
 server = Server("data")
@@ -106,6 +106,37 @@ def _format_reminders(items: list) -> str:
 
 def _available_lists() -> list[str]:
     return sorted(p.stem for p in LISTS_DIR.glob("*.json"))
+
+
+def _load_profile() -> dict:
+    if HEALTH_PROFILE.exists():
+        return json.loads(HEALTH_PROFILE.read_text())
+    return {"weight_log": []}
+
+
+def _save_profile(data: dict) -> None:
+    data["updated"] = _now()
+    _save_json(HEALTH_PROFILE, data)
+
+
+def _load_workouts() -> dict:
+    if HEALTH_WORKOUTS.exists():
+        return json.loads(HEALTH_WORKOUTS.read_text())
+    return {"sessions": []}
+
+
+def _save_workouts(data: dict) -> None:
+    _save_json(HEALTH_WORKOUTS, data)
+
+
+def _resolve_session(sessions: list, id_prefix: str) -> dict | None:
+    for s in sessions:
+        if s["id"] == id_prefix:
+            return s
+    matches = [s for s in sessions if s["id"].startswith(id_prefix) and not s.get("deleted")]
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 @server.list_tools()
@@ -338,6 +369,155 @@ async def list_tools() -> list[types.Tool]:
             ),
             inputSchema={"type": "object", "properties": {}},
         ),
+        # --- Health: Profile ---
+        types.Tool(
+            name="get_health_profile",
+            description="Returns height and recent weight log entries.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="set_height",
+            description="Set or update height in inches.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "height_in": {
+                        "type": "number",
+                        "description": "Height in inches (e.g. 72 for 6'0\").",
+                    },
+                },
+                "required": ["height_in"],
+            },
+        ),
+        types.Tool(
+            name="log_weight",
+            description="Log a body weight entry. Appends to the weight log.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "weight_lbs": {
+                        "type": "number",
+                        "description": "Body weight in pounds.",
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "Date in YYYY-MM-DD format. Defaults to today.",
+                    },
+                },
+                "required": ["weight_lbs"],
+            },
+        ),
+        # --- Health: Catalog ---
+        types.Tool(
+            name="get_workout_catalog",
+            description=(
+                "Returns all unique exercise names and session types seen so far. "
+                "Call this before start_workout or log_exercise to see existing session types "
+                "and exercise names. Always reuse an exact existing name when the exercise is "
+                "the same, even if the user phrases it differently."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        # --- Health: Workout Sessions ---
+        types.Tool(
+            name="start_workout",
+            description=(
+                "Start a new workout session. Returns a session ID. "
+                "Call get_workout_catalog first to reuse an existing session type."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "description": "Workout type (e.g. 'push', 'pull', 'legs'). Check catalog for existing types.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional notes for this session.",
+                    },
+                },
+                "required": ["type"],
+            },
+        ),
+        types.Tool(
+            name="log_exercise",
+            description=(
+                "Log an exercise and its sets to an open workout session. "
+                "Check get_workout_catalog first to match existing exercise names for consistency."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID or 8-char prefix from start_workout.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Exercise name. Reuse exact name from catalog when possible.",
+                    },
+                    "sets": {
+                        "type": "array",
+                        "description": "List of sets: [{weight_lbs, reps}].",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "weight_lbs": {"type": "number"},
+                                "reps": {"type": "integer"},
+                            },
+                            "required": ["weight_lbs", "reps"],
+                        },
+                    },
+                },
+                "required": ["session_id", "name", "sets"],
+            },
+        ),
+        types.Tool(
+            name="list_workouts",
+            description="List recent workout sessions (summarized, no set detail).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max sessions to return. Defaults to 10.",
+                    },
+                },
+            },
+        ),
+        types.Tool(
+            name="get_workout",
+            description="Get full detail of a workout session including all exercises and sets.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID or 8-char prefix.",
+                    },
+                },
+                "required": ["session_id"],
+            },
+        ),
+        types.Tool(
+            name="get_exercise_history",
+            description="Get progression history for a single exercise across all sessions.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Exercise name (exact match, case-insensitive).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max sessions to return. Defaults to 20.",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
     ]
 
 
@@ -509,6 +689,177 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
     if name == "review_reminders":
         return _text(_build_reminders_review())
+
+    # ---- Health: Profile ----
+    if name == "get_health_profile":
+        profile = _load_profile()
+        height = profile.get("height_in")
+        weight_log = profile.get("weight_log", [])
+        lines = []
+        if height:
+            feet, inches = divmod(int(height), 12)
+            lines.append(f"Height: {height} in ({feet}'{inches}\")")
+        else:
+            lines.append("Height: not set")
+        if weight_log:
+            latest = weight_log[-1]
+            lines.append(f"Latest weight: {latest['weight_lbs']} lbs on {latest['date']}")
+            recent = weight_log[-5:]
+            lines.append(f"\nWeight log (last {len(recent)}):")
+            for e in reversed(recent):
+                lines.append(f"  {e['date']}: {e['weight_lbs']} lbs")
+        else:
+            lines.append("Weight log: empty")
+        return _text("\n".join(lines))
+
+    if name == "set_height":
+        profile = _load_profile()
+        profile["height_in"] = float(arguments["height_in"])
+        _save_profile(profile)
+        h = profile["height_in"]
+        feet, inches = divmod(int(h), 12)
+        return _text(f"Height set to {h} in ({feet}'{inches}\").")
+
+    if name == "log_weight":
+        profile = _load_profile()
+        weight_log = profile.get("weight_log", [])
+        date = arguments.get("date") or _now()[:10]
+        entry = {
+            "date": date,
+            "weight_lbs": float(arguments["weight_lbs"]),
+            "logged_at": _now(),
+        }
+        weight_log.append(entry)
+        profile["weight_log"] = weight_log
+        _save_profile(profile)
+        return _text(f"Logged {entry['weight_lbs']} lbs on {date}.")
+
+    # ---- Health: Catalog ----
+    if name == "get_workout_catalog":
+        data = _load_workouts()
+        sessions = [s for s in data.get("sessions", []) if not s.get("deleted")]
+        types_seen = sorted({s["type"] for s in sessions})
+        exercises_seen = sorted({
+            ex["name"]
+            for s in sessions
+            for ex in s.get("exercises", [])
+        })
+        lines = [
+            f"Session types ({len(types_seen)}): {', '.join(types_seen) or 'none yet'}",
+            f"Exercises ({len(exercises_seen)}): {', '.join(exercises_seen) or 'none yet'}",
+        ]
+        return _text("\n".join(lines))
+
+    # ---- Health: Workout Sessions ----
+    if name == "start_workout":
+        data = _load_workouts()
+        now = _now()
+        session = {
+            "id": str(uuid.uuid4()),
+            "started_at": now,
+            "finished_at": None,
+            "type": arguments["type"].strip(),
+            "notes": arguments.get("notes", "").strip(),
+            "deleted": False,
+            "exercises": [],
+        }
+        data["sessions"].append(session)
+        _save_workouts(data)
+        return _text(
+            f"Started {session['type']} workout at {now}.\n"
+            f"Session ID: {session['id'][:8]}"
+        )
+
+    if name == "log_exercise":
+        data = _load_workouts()
+        session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+        if not session:
+            return _text(f"Session not found: {arguments['session_id']}")
+        now = _now()
+        sets_raw = arguments["sets"]
+        sets = []
+        for i, s in enumerate(sets_raw, 1):
+            sets.append({
+                "set_num": i,
+                "weight_lbs": float(s["weight_lbs"]),
+                "reps": int(s["reps"]),
+                "logged_at": now,
+            })
+        exercise = {
+            "id": str(uuid.uuid4()),
+            "name": arguments["name"].strip(),
+            "logged_at": now,
+            "sets": sets,
+        }
+        session["exercises"].append(exercise)
+        _save_workouts(data)
+        set_summary = ", ".join(f"{s['weight_lbs']}x{s['reps']}" for s in sets)
+        return _text(
+            f"Logged {exercise['name']}: {len(sets)} sets ({set_summary})  "
+            f"[session: {session['id'][:8]}]"
+        )
+
+    if name == "list_workouts":
+        data = _load_workouts()
+        limit = int(arguments.get("limit") or 10)
+        sessions = [s for s in data.get("sessions", []) if not s.get("deleted")]
+        sessions = sessions[-limit:][::-1]
+        if not sessions:
+            return _text("No workout sessions found.")
+        lines = []
+        for s in sessions:
+            ex_count = len(s.get("exercises", []))
+            status = "open" if s.get("finished_at") is None else "done"
+            lines.append(
+                f"[{s['id'][:8]}] {s['started_at'][:10]}  {s['type']}  "
+                f"{ex_count} exercises  ({status})"
+            )
+        return _text("\n".join(lines))
+
+    if name == "get_workout":
+        data = _load_workouts()
+        session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+        if not session:
+            return _text(f"Session not found: {arguments['session_id']}")
+        lines = [
+            f"Session: {session['id'][:8]}",
+            f"Type: {session['type']}",
+            f"Started: {session['started_at']}",
+            f"Status: {'open' if session.get('finished_at') is None else 'finished'}",
+        ]
+        if session.get("notes"):
+            lines.append(f"Notes: {session['notes']}")
+        lines.append("")
+        for ex in session.get("exercises", []):
+            lines.append(f"  {ex['name']} ({ex['logged_at'][11:16]}):")
+            for s in ex.get("sets", []):
+                lines.append(f"    Set {s['set_num']}: {s['weight_lbs']} lbs x {s['reps']} reps")
+        return _text("\n".join(lines))
+
+    if name == "get_exercise_history":
+        data = _load_workouts()
+        target = arguments["name"].strip().lower()
+        limit = int(arguments.get("limit") or 20)
+        results = []
+        for s in data.get("sessions", []):
+            if s.get("deleted"):
+                continue
+            for ex in s.get("exercises", []):
+                if ex["name"].lower() == target:
+                    results.append({
+                        "date": s["started_at"][:10],
+                        "session_id": s["id"][:8],
+                        "session_type": s["type"],
+                        "sets": ex["sets"],
+                    })
+        results = results[-limit:][::-1]
+        if not results:
+            return _text(f"No history found for '{arguments['name']}'.")
+        lines = [f"History for {arguments['name']} ({len(results)} sessions):"]
+        for r in results:
+            set_summary = ", ".join(f"{s['weight_lbs']}x{s['reps']}" for s in r["sets"])
+            lines.append(f"  {r['date']} [{r['session_id']}] {r['session_type']}: {set_summary}")
+        return _text("\n".join(lines))
 
     return _text(f"Unknown tool: {name}")
 
