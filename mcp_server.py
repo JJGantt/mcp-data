@@ -43,6 +43,7 @@ from config import LISTS_DIR, NOTES_DIR, REMINDERS_FILE, HEALTH_PROFILE, HEALTH_
 
 log = logging.getLogger(__name__)
 server = Server("data")
+_workouts_lock = asyncio.Lock()
 
 
 def _now() -> str:
@@ -127,6 +128,28 @@ def _load_workouts() -> dict:
 
 def _save_workouts(data: dict) -> None:
     _save_json(HEALTH_WORKOUTS, data)
+
+
+def _format_session_table(session: dict) -> str:
+    lines = [
+        f"**{session['type'].title()} session** ({session['date'][:10]})  `{session['id'][:8]}`",
+        "",
+        "| Exercise | Sets | Reps | Weight |",
+        "|---|---|---|---|",
+    ]
+    for ex in session.get("exercises", []):
+        sets = ex.get("sets", [])
+        if not sets:
+            lines.append(f"| {ex['name']} | 0 | — | — |")
+            continue
+        n = len(sets)
+        weights = [s["weight_lbs"] for s in sets]
+        reps_list = [s["reps"] for s in sets]
+        w = weights[0]
+        weight_str = f"{int(w) if w == int(w) else w} lbs" if len(set(weights)) == 1 else "varies"
+        reps_str = str(reps_list[0]) if len(set(reps_list)) == 1 else "varies"
+        lines.append(f"| {ex['name']} | {n} | {reps_str} | {weight_str} |")
+    return "\n".join(lines)
 
 
 def _resolve_session(sessions: list, id_prefix: str) -> dict | None:
@@ -819,47 +842,46 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
     # ---- Health: Workout Sessions ----
     if name == "start_workout":
-        data = _load_workouts()
-        date = arguments.get("date") or _now()
-        session = {
-            "id": str(uuid.uuid4()),
-            "date": date,
-            "type": arguments["type"].strip(),
-            "notes": arguments.get("notes", "").strip(),
-            "exercises": [],
-        }
-        data["sessions"].append(session)
-        _save_workouts(data)
+        async with _workouts_lock:
+            data = _load_workouts()
+            date = arguments.get("date") or _now()
+            session = {
+                "id": str(uuid.uuid4()),
+                "date": date,
+                "type": arguments["type"].strip(),
+                "notes": arguments.get("notes", "").strip(),
+                "exercises": [],
+            }
+            data["sessions"].append(session)
+            _save_workouts(data)
         return _text(
             f"Started {session['type']} workout ({date}).\n"
-            f"Session ID: {session['id'][:8]}"
+            f"Session ID: {session['id'][:8]}\n\n"
+            + _format_session_table(session)
         )
 
     if name == "log_exercise":
-        data = _load_workouts()
-        session = _resolve_session(data["sessions"], arguments["session_id"].strip())
-        if not session:
-            return _text(f"Session not found: {arguments['session_id']}")
-        sets_raw = arguments["sets"]
-        sets = []
-        for i, s in enumerate(sets_raw, 1):
-            sets.append({
-                "set_num": i,
-                "weight_lbs": float(s["weight_lbs"]),
-                "reps": int(s["reps"]),
-            })
-        exercise = {
-            "id": str(uuid.uuid4()),
-            "name": arguments["name"].strip(),
-            "sets": sets,
-        }
-        session["exercises"].append(exercise)
-        _save_workouts(data)
-        set_summary = ", ".join(f"{s['weight_lbs']}x{s['reps']}" for s in sets)
-        return _text(
-            f"Logged {exercise['name']}: {len(sets)} sets ({set_summary})  "
-            f"[session: {session['id'][:8]}]"
-        )
+        async with _workouts_lock:
+            data = _load_workouts()
+            session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+            if not session:
+                return _text(f"Session not found: {arguments['session_id']}")
+            sets_raw = arguments["sets"]
+            sets = []
+            for i, s in enumerate(sets_raw, 1):
+                sets.append({
+                    "set_num": i,
+                    "weight_lbs": float(s["weight_lbs"]),
+                    "reps": int(s["reps"]),
+                })
+            exercise = {
+                "id": str(uuid.uuid4()),
+                "name": arguments["name"].strip(),
+                "sets": sets,
+            }
+            session["exercises"].append(exercise)
+            _save_workouts(data)
+        return _text(_format_session_table(session))
 
     if name == "list_workouts":
         data = _load_workouts()
@@ -919,58 +941,57 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         return _text("\n".join(lines))
 
     if name == "update_exercise":
-        data = _load_workouts()
-        session = _resolve_session(data["sessions"], arguments["session_id"].strip())
-        if not session:
-            return _text(f"Session not found: {arguments['session_id']}")
-        target = arguments["name"].strip().lower()
-        exercise = None
-        for ex in session.get("exercises", []):
-            if ex["name"].lower() == target:
-                exercise = ex
-                break
-        if not exercise:
-            return _text(f"Exercise '{arguments['name']}' not found in session {session['id'][:8]}.")
-        sets = []
-        for i, s in enumerate(arguments["sets"], 1):
-            sets.append({
-                "set_num": i,
-                "weight_lbs": float(s["weight_lbs"]),
-                "reps": int(s["reps"]),
-            })
-        exercise["sets"] = sets
-        _save_workouts(data)
-        set_summary = ", ".join(f"{s['weight_lbs']}x{s['reps']}" for s in sets)
-        return _text(
-            f"Updated {exercise['name']}: {len(sets)} sets ({set_summary})  "
-            f"[session: {session['id'][:8]}]"
-        )
+        async with _workouts_lock:
+            data = _load_workouts()
+            session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+            if not session:
+                return _text(f"Session not found: {arguments['session_id']}")
+            target = arguments["name"].strip().lower()
+            exercise = None
+            for ex in session.get("exercises", []):
+                if ex["name"].lower() == target:
+                    exercise = ex
+                    break
+            if not exercise:
+                return _text(f"Exercise '{arguments['name']}' not found in session {session['id'][:8]}.")
+            sets = []
+            for i, s in enumerate(arguments["sets"], 1):
+                sets.append({
+                    "set_num": i,
+                    "weight_lbs": float(s["weight_lbs"]),
+                    "reps": int(s["reps"]),
+                })
+            exercise["sets"] = sets
+            _save_workouts(data)
+        return _text(_format_session_table(session))
 
     if name == "remove_exercise":
-        data = _load_workouts()
-        session = _resolve_session(data["sessions"], arguments["session_id"].strip())
-        if not session:
-            return _text(f"Session not found: {arguments['session_id']}")
-        target = arguments["name"].strip().lower()
-        exercises = session.get("exercises", [])
-        idx = None
-        for i, ex in enumerate(exercises):
-            if ex["name"].lower() == target:
-                idx = i
-                break
-        if idx is None:
-            return _text(f"Exercise '{arguments['name']}' not found in session {session['id'][:8]}.")
-        removed = exercises.pop(idx)
-        _save_workouts(data)
-        return _text(f"Removed {removed['name']} from session {session['id'][:8]}.")
+        async with _workouts_lock:
+            data = _load_workouts()
+            session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+            if not session:
+                return _text(f"Session not found: {arguments['session_id']}")
+            target = arguments["name"].strip().lower()
+            exercises = session.get("exercises", [])
+            idx = None
+            for i, ex in enumerate(exercises):
+                if ex["name"].lower() == target:
+                    idx = i
+                    break
+            if idx is None:
+                return _text(f"Exercise '{arguments['name']}' not found in session {session['id'][:8]}.")
+            removed = exercises.pop(idx)
+            _save_workouts(data)
+        return _text(f"Removed {removed['name']}.\n\n" + _format_session_table(session))
 
     if name == "delete_workout":
-        data = _load_workouts()
-        session = _resolve_session(data["sessions"], arguments["session_id"].strip())
-        if not session:
-            return _text(f"Session not found: {arguments['session_id']}")
-        data["sessions"].remove(session)
-        _save_workouts(data)
+        async with _workouts_lock:
+            data = _load_workouts()
+            session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+            if not session:
+                return _text(f"Session not found: {arguments['session_id']}")
+            data["sessions"].remove(session)
+            _save_workouts(data)
         return _text(f"Deleted session {session['id'][:8]} ({session['type']} on {session['date'][:10]}).")
 
     return _text(f"Unknown tool: {name}")
