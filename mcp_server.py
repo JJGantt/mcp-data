@@ -791,6 +791,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         exercise = {
             "id": str(uuid.uuid4()),
             "name": arguments["name"].strip(),
+            "logged_at": _now(),
             "sets": sets,
         }
         session["exercises"].append(exercise)
@@ -833,7 +834,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             lines.append(f"Notes: {session['notes']}")
         lines.append("")
         for ex in session.get("exercises", []):
-            lines.append(f"  {ex['name']} ({ex['logged_at'][11:16]}):")
+            time_str = f" ({ex['logged_at'][11:16]})" if ex.get("logged_at") else ""
+            lines.append(f"  {ex['name']}{time_str}:")
             for s in ex.get("sets", []):
                 lines.append(f"    Set {s['set_num']}: {s['weight_lbs']} lbs x {s['reps']} reps")
         return _text("\n".join(lines))
