@@ -127,7 +127,9 @@ def _load_workouts() -> dict:
 
 
 def _save_workouts(data: dict) -> None:
-    _save_json(HEALTH_WORKOUTS, data)
+    tmp = HEALTH_WORKOUTS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.rename(HEALTH_WORKOUTS)
 
 
 def _format_session_table(session: dict) -> str:
@@ -471,7 +473,8 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="log_exercise",
             description=(
-                "Log an exercise and its sets to a workout session. "
+                "Log one or more exercises to a workout session in a single call. "
+                "Pass an 'exercises' array (preferred) to log multiple at once. "
                 "Check get_workout_catalog first to match existing exercise names for consistency. "
                 "Returns the updated session table — display it to the user in your response."
             ),
@@ -482,24 +485,30 @@ async def list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Session ID or 8-char prefix from start_workout.",
                     },
-                    "name": {
-                        "type": "string",
-                        "description": "Exercise name. Reuse exact name from catalog when possible.",
-                    },
-                    "sets": {
+                    "exercises": {
                         "type": "array",
-                        "description": "List of sets: [{weight_lbs, reps}].",
+                        "description": "List of exercises to log: [{name, sets: [{weight_lbs, reps}]}].",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "weight_lbs": {"type": "number"},
-                                "reps": {"type": "integer"},
+                                "name": {"type": "string"},
+                                "sets": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "weight_lbs": {"type": "number"},
+                                            "reps": {"type": "integer"},
+                                        },
+                                        "required": ["weight_lbs", "reps"],
+                                    },
+                                },
                             },
-                            "required": ["weight_lbs", "reps"],
+                            "required": ["name", "sets"],
                         },
                     },
                 },
-                "required": ["session_id", "name", "sets"],
+                "required": ["session_id", "exercises"],
             },
         ),
         types.Tool(
@@ -867,20 +876,20 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             session = _resolve_session(data["sessions"], arguments["session_id"].strip())
             if not session:
                 return _text(f"Session not found: {arguments['session_id']}")
-            sets_raw = arguments["sets"]
-            sets = []
-            for i, s in enumerate(sets_raw, 1):
-                sets.append({
-                    "set_num": i,
-                    "weight_lbs": float(s["weight_lbs"]),
-                    "reps": int(s["reps"]),
+            exercises_raw = arguments.get("exercises") or [{"name": arguments["name"], "sets": arguments["sets"]}]
+            for ex_raw in exercises_raw:
+                sets = []
+                for i, s in enumerate(ex_raw["sets"], 1):
+                    sets.append({
+                        "set_num": i,
+                        "weight_lbs": float(s["weight_lbs"]),
+                        "reps": int(s["reps"]),
+                    })
+                session["exercises"].append({
+                    "id": str(uuid.uuid4()),
+                    "name": ex_raw["name"].strip(),
+                    "sets": sets,
                 })
-            exercise = {
-                "id": str(uuid.uuid4()),
-                "name": arguments["name"].strip(),
-                "sets": sets,
-            }
-            session["exercises"].append(exercise)
             _save_workouts(data)
         return _text(_format_session_table(session))
 
