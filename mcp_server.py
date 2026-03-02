@@ -423,7 +423,8 @@ async def list_tools() -> list[types.Tool]:
             name="start_workout",
             description=(
                 "Start a new workout session. Returns a session ID. "
-                "Call get_workout_catalog first to reuse an existing session type."
+                "Call get_workout_catalog first to reuse an existing session type. "
+                "Pass started_at for retroactive logging (e.g. logging a workout that happened yesterday)."
             ),
             inputSchema={
                 "type": "object",
@@ -436,6 +437,10 @@ async def list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Optional notes for this session.",
                     },
+                    "started_at": {
+                        "type": "string",
+                        "description": "ISO datetime of when the workout actually started (e.g. '2026-03-01T19:30:00'). Defaults to now if omitted.",
+                    },
                 },
                 "required": ["type"],
             },
@@ -444,7 +449,8 @@ async def list_tools() -> list[types.Tool]:
             name="log_exercise",
             description=(
                 "Log an exercise and its sets to an open workout session. "
-                "Check get_workout_catalog first to match existing exercise names for consistency."
+                "Check get_workout_catalog first to match existing exercise names for consistency. "
+                "Pass logged_at for retroactive logging."
             ),
             inputSchema={
                 "type": "object",
@@ -468,6 +474,10 @@ async def list_tools() -> list[types.Tool]:
                             },
                             "required": ["weight_lbs", "reps"],
                         },
+                    },
+                    "logged_at": {
+                        "type": "string",
+                        "description": "ISO datetime of when this exercise was done (e.g. '2026-03-01T19:45:00'). Defaults to now if omitted.",
                     },
                 },
                 "required": ["session_id", "name", "sets"],
@@ -753,10 +763,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     # ---- Health: Workout Sessions ----
     if name == "start_workout":
         data = _load_workouts()
-        now = _now()
+        started_at = arguments.get("started_at") or _now()
         session = {
             "id": str(uuid.uuid4()),
-            "started_at": now,
+            "started_at": started_at,
             "finished_at": None,
             "type": arguments["type"].strip(),
             "notes": arguments.get("notes", "").strip(),
@@ -766,7 +776,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         data["sessions"].append(session)
         _save_workouts(data)
         return _text(
-            f"Started {session['type']} workout at {now}.\n"
+            f"Started {session['type']} workout at {started_at}.\n"
             f"Session ID: {session['id'][:8]}"
         )
 
@@ -775,7 +785,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         session = _resolve_session(data["sessions"], arguments["session_id"].strip())
         if not session:
             return _text(f"Session not found: {arguments['session_id']}")
-        now = _now()
+        logged_at = arguments.get("logged_at") or _now()
         sets_raw = arguments["sets"]
         sets = []
         for i, s in enumerate(sets_raw, 1):
@@ -783,12 +793,12 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 "set_num": i,
                 "weight_lbs": float(s["weight_lbs"]),
                 "reps": int(s["reps"]),
-                "logged_at": now,
+                "logged_at": logged_at,
             })
         exercise = {
             "id": str(uuid.uuid4()),
             "name": arguments["name"].strip(),
-            "logged_at": now,
+            "logged_at": logged_at,
             "sets": sets,
         }
         session["exercises"].append(exercise)
