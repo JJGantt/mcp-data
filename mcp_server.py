@@ -449,8 +449,7 @@ async def list_tools() -> list[types.Tool]:
             name="log_exercise",
             description=(
                 "Log an exercise and its sets to an open workout session. "
-                "Check get_workout_catalog first to match existing exercise names for consistency. "
-                "Pass logged_at for retroactive logging."
+                "Check get_workout_catalog first to match existing exercise names for consistency."
             ),
             inputSchema={
                 "type": "object",
@@ -474,10 +473,6 @@ async def list_tools() -> list[types.Tool]:
                             },
                             "required": ["weight_lbs", "reps"],
                         },
-                    },
-                    "logged_at": {
-                        "type": "string",
-                        "description": "ISO datetime of when this exercise was done (e.g. '2026-03-01T19:45:00'). Defaults to now if omitted.",
                     },
                 },
                 "required": ["session_id", "name", "sets"],
@@ -785,7 +780,6 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         session = _resolve_session(data["sessions"], arguments["session_id"].strip())
         if not session:
             return _text(f"Session not found: {arguments['session_id']}")
-        logged_at = arguments.get("logged_at") or _now()
         sets_raw = arguments["sets"]
         sets = []
         for i, s in enumerate(sets_raw, 1):
@@ -793,12 +787,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 "set_num": i,
                 "weight_lbs": float(s["weight_lbs"]),
                 "reps": int(s["reps"]),
-                "logged_at": logged_at,
             })
         exercise = {
             "id": str(uuid.uuid4()),
             "name": arguments["name"].strip(),
-            "logged_at": logged_at,
             "sets": sets,
         }
         session["exercises"].append(exercise)
