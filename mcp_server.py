@@ -472,7 +472,8 @@ async def list_tools() -> list[types.Tool]:
             name="log_exercise",
             description=(
                 "Log an exercise and its sets to a workout session. "
-                "Check get_workout_catalog first to match existing exercise names for consistency."
+                "Check get_workout_catalog first to match existing exercise names for consistency. "
+                "Returns the updated session table — display it to the user in your response."
             ),
             inputSchema={
                 "type": "object",
@@ -548,7 +549,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="update_exercise",
-            description="Update an exercise's sets in a workout session. Finds the exercise by name (case-insensitive) and replaces its sets.",
+            description="Update an exercise's sets in a workout session. Finds the exercise by name (case-insensitive) and replaces its sets. Returns the updated session table — display it to the user in your response.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -578,7 +579,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="remove_exercise",
-            description="Remove an exercise from a workout session by name (case-insensitive).",
+            description="Remove an exercise from a workout session by name (case-insensitive). Returns the updated session table — display it to the user in your response.",
             inputSchema={
                 "type": "object",
                 "properties": {
