@@ -133,7 +133,7 @@ def _resolve_session(sessions: list, id_prefix: str) -> dict | None:
     for s in sessions:
         if s["id"] == id_prefix:
             return s
-    matches = [s for s in sessions if s["id"].startswith(id_prefix) and not s.get("deleted")]
+    matches = [s for s in sessions if s["id"].startswith(id_prefix)]
     if len(matches) == 1:
         return matches[0]
     return None
@@ -424,7 +424,7 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Start a new workout session. Returns a session ID. "
                 "Call get_workout_catalog first to reuse an existing session type. "
-                "Pass started_at for retroactive logging (e.g. logging a workout that happened yesterday)."
+                "Pass date for retroactive logging (e.g. logging a workout that happened yesterday)."
             ),
             inputSchema={
                 "type": "object",
@@ -437,9 +437,9 @@ async def list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Optional notes for this session.",
                     },
-                    "started_at": {
+                    "date": {
                         "type": "string",
-                        "description": "ISO datetime of when the workout actually started (e.g. '2026-03-01T19:30:00'). Defaults to now if omitted.",
+                        "description": "ISO datetime of when the workout happened (e.g. '2026-03-01T19:30:00'). Defaults to now if omitted.",
                     },
                 },
                 "required": ["type"],
@@ -448,7 +448,7 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="log_exercise",
             description=(
-                "Log an exercise and its sets to an open workout session. "
+                "Log an exercise and its sets to a workout session. "
                 "Check get_workout_catalog first to match existing exercise names for consistency."
             ),
             inputSchema={
@@ -521,6 +521,68 @@ async def list_tools() -> list[types.Tool]:
                     },
                 },
                 "required": ["name"],
+            },
+        ),
+        types.Tool(
+            name="update_exercise",
+            description="Update an exercise's sets in a workout session. Finds the exercise by name (case-insensitive) and replaces its sets.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID or 8-char prefix.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Exercise name (case-insensitive match).",
+                    },
+                    "sets": {
+                        "type": "array",
+                        "description": "New sets to replace existing: [{weight_lbs, reps}].",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "weight_lbs": {"type": "number"},
+                                "reps": {"type": "integer"},
+                            },
+                            "required": ["weight_lbs", "reps"],
+                        },
+                    },
+                },
+                "required": ["session_id", "name", "sets"],
+            },
+        ),
+        types.Tool(
+            name="remove_exercise",
+            description="Remove an exercise from a workout session by name (case-insensitive).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID or 8-char prefix.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Exercise name (case-insensitive match).",
+                    },
+                },
+                "required": ["session_id", "name"],
+            },
+        ),
+        types.Tool(
+            name="delete_workout",
+            description="Permanently delete a workout session.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID or 8-char prefix.",
+                    },
+                },
+                "required": ["session_id"],
             },
         ),
     ]
@@ -742,7 +804,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     # ---- Health: Catalog ----
     if name == "get_workout_catalog":
         data = _load_workouts()
-        sessions = [s for s in data.get("sessions", []) if not s.get("deleted")]
+        sessions = data.get("sessions", [])
         types_seen = sorted({s["type"] for s in sessions})
         exercises_seen = sorted({
             ex["name"]
@@ -758,20 +820,18 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     # ---- Health: Workout Sessions ----
     if name == "start_workout":
         data = _load_workouts()
-        started_at = arguments.get("started_at") or _now()
+        date = arguments.get("date") or _now()
         session = {
             "id": str(uuid.uuid4()),
-            "started_at": started_at,
-            "finished_at": None,
+            "date": date,
             "type": arguments["type"].strip(),
             "notes": arguments.get("notes", "").strip(),
-            "deleted": False,
             "exercises": [],
         }
         data["sessions"].append(session)
         _save_workouts(data)
         return _text(
-            f"Started {session['type']} workout at {started_at}.\n"
+            f"Started {session['type']} workout ({date}).\n"
             f"Session ID: {session['id'][:8]}"
         )
 
@@ -791,7 +851,6 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         exercise = {
             "id": str(uuid.uuid4()),
             "name": arguments["name"].strip(),
-            "logged_at": _now(),
             "sets": sets,
         }
         session["exercises"].append(exercise)
@@ -805,17 +864,15 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     if name == "list_workouts":
         data = _load_workouts()
         limit = int(arguments.get("limit") or 10)
-        sessions = [s for s in data.get("sessions", []) if not s.get("deleted")]
-        sessions = sessions[-limit:][::-1]
+        sessions = data.get("sessions", [])[-limit:][::-1]
         if not sessions:
             return _text("No workout sessions found.")
         lines = []
         for s in sessions:
             ex_count = len(s.get("exercises", []))
-            status = "open" if s.get("finished_at") is None else "done"
             lines.append(
-                f"[{s['id'][:8]}] {s['started_at'][:10]}  {s['type']}  "
-                f"{ex_count} exercises  ({status})"
+                f"[{s['id'][:8]}] {s['date'][:10]}  {s['type']}  "
+                f"{ex_count} exercises"
             )
         return _text("\n".join(lines))
 
@@ -827,15 +884,13 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         lines = [
             f"Session: {session['id'][:8]}",
             f"Type: {session['type']}",
-            f"Started: {session['started_at']}",
-            f"Status: {'open' if session.get('finished_at') is None else 'finished'}",
+            f"Date: {session['date']}",
         ]
         if session.get("notes"):
             lines.append(f"Notes: {session['notes']}")
         lines.append("")
         for ex in session.get("exercises", []):
-            time_str = f" ({ex['logged_at'][11:16]})" if ex.get("logged_at") else ""
-            lines.append(f"  {ex['name']}{time_str}:")
+            lines.append(f"  {ex['name']}:")
             for s in ex.get("sets", []):
                 lines.append(f"    Set {s['set_num']}: {s['weight_lbs']} lbs x {s['reps']} reps")
         return _text("\n".join(lines))
@@ -846,12 +901,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         limit = int(arguments.get("limit") or 20)
         results = []
         for s in data.get("sessions", []):
-            if s.get("deleted"):
-                continue
             for ex in s.get("exercises", []):
                 if ex["name"].lower() == target:
                     results.append({
-                        "date": s["started_at"][:10],
+                        "date": s["date"][:10],
                         "session_id": s["id"][:8],
                         "session_type": s["type"],
                         "sets": ex["sets"],
@@ -864,6 +917,61 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             set_summary = ", ".join(f"{s['weight_lbs']}x{s['reps']}" for s in r["sets"])
             lines.append(f"  {r['date']} [{r['session_id']}] {r['session_type']}: {set_summary}")
         return _text("\n".join(lines))
+
+    if name == "update_exercise":
+        data = _load_workouts()
+        session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+        if not session:
+            return _text(f"Session not found: {arguments['session_id']}")
+        target = arguments["name"].strip().lower()
+        exercise = None
+        for ex in session.get("exercises", []):
+            if ex["name"].lower() == target:
+                exercise = ex
+                break
+        if not exercise:
+            return _text(f"Exercise '{arguments['name']}' not found in session {session['id'][:8]}.")
+        sets = []
+        for i, s in enumerate(arguments["sets"], 1):
+            sets.append({
+                "set_num": i,
+                "weight_lbs": float(s["weight_lbs"]),
+                "reps": int(s["reps"]),
+            })
+        exercise["sets"] = sets
+        _save_workouts(data)
+        set_summary = ", ".join(f"{s['weight_lbs']}x{s['reps']}" for s in sets)
+        return _text(
+            f"Updated {exercise['name']}: {len(sets)} sets ({set_summary})  "
+            f"[session: {session['id'][:8]}]"
+        )
+
+    if name == "remove_exercise":
+        data = _load_workouts()
+        session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+        if not session:
+            return _text(f"Session not found: {arguments['session_id']}")
+        target = arguments["name"].strip().lower()
+        exercises = session.get("exercises", [])
+        idx = None
+        for i, ex in enumerate(exercises):
+            if ex["name"].lower() == target:
+                idx = i
+                break
+        if idx is None:
+            return _text(f"Exercise '{arguments['name']}' not found in session {session['id'][:8]}.")
+        removed = exercises.pop(idx)
+        _save_workouts(data)
+        return _text(f"Removed {removed['name']} from session {session['id'][:8]}.")
+
+    if name == "delete_workout":
+        data = _load_workouts()
+        session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+        if not session:
+            return _text(f"Session not found: {arguments['session_id']}")
+        data["sessions"].remove(session)
+        _save_workouts(data)
+        return _text(f"Deleted session {session['id'][:8]} ({session['type']} on {session['date'][:10]}).")
 
     return _text(f"Unknown tool: {name}")
 
