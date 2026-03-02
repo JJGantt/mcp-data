@@ -136,6 +136,27 @@ def _merge_note_data(local: dict | None, remote: dict | None) -> dict | None:
     return local if local.get("updated", "") >= remote.get("updated", "") else remote
 
 
+def _merge_workouts_data(local: dict | None, remote: dict | None) -> dict:
+    """Merge workout sessions by session ID, exercises by exercise ID."""
+    by_session = {}
+    for session in (local or {}).get("sessions", []):
+        by_session[session["id"]] = {**session, "exercises": {ex["id"]: ex for ex in session.get("exercises", [])}}
+    for session in (remote or {}).get("sessions", []):
+        sid = session["id"]
+        if sid not in by_session:
+            by_session[sid] = {**session, "exercises": {ex["id"]: ex for ex in session.get("exercises", [])}}
+        else:
+            # Session exists on both sides — merge exercises by ID
+            for ex in session.get("exercises", []):
+                by_session[sid]["exercises"].setdefault(ex["id"], ex)
+    # Rebuild sessions with exercises as list, sorted by date
+    sessions = []
+    for s in by_session.values():
+        sessions.append({**s, "exercises": list(s["exercises"].values())})
+    sessions.sort(key=lambda s: s.get("date", ""))
+    return {"sessions": sessions}
+
+
 def _changed(a: dict | None, b: dict | None) -> bool:
     return json.dumps(a, sort_keys=True) != json.dumps(b, sort_keys=True)
 
@@ -226,21 +247,32 @@ def main():
     # Merge reminders
     _sync_list(host, "reminders/reminders.json", "reminders")
 
-    # Merge health files (last-writer-wins, same as notes)
-    for health_file in sorted(HEALTH_DIR.glob("*.json")):
-        rel = f"health/{health_file.name}"
-        _sync_note(host, rel, f"health/{health_file.stem}")
-
-    # Check for health files that exist on remote but not locally
+    # Merge health files
+    all_health = set(f.name for f in sorted(HEALTH_DIR.glob("*.json")))
     try:
         remote_health = _ssh_cmd(host, f"ls {REMOTE_DATA_DIR}/health/*.json 2>/dev/null || true")
         for line in remote_health.strip().splitlines():
-            name = Path(line).name
-            if not (HEALTH_DIR / name).exists():
-                rel = f"health/{name}"
-                _sync_note(host, rel, f"health/{Path(name).stem}")
+            if line.strip():
+                all_health.add(Path(line).name)
     except RuntimeError:
         pass
+    for name in sorted(all_health):
+        rel = f"health/{name}"
+        local_path = DATA_DIR / rel
+        if name == "workouts.json":
+            local = _read_local_json(local_path)
+            remote = _read_remote_json(host, rel)
+            merged = _merge_workouts_data(local, remote)
+            local_changed = _changed(merged, local)
+            remote_changed = _changed(merged, remote)
+            if local_changed:
+                _write_local_json(local_path, merged)
+            if remote_changed:
+                _write_remote_json(host, rel, merged)
+            if local_changed or remote_changed:
+                print(f"  health/workouts: merged ({len(merged['sessions'])} sessions)")
+        else:
+            _sync_note(host, rel, f"health/{Path(name).stem}")
 
     print("Done.")
 
