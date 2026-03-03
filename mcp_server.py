@@ -145,11 +145,10 @@ def _format_session_table(session: dict) -> str:
             lines.append(f"| {ex['name']} | 0 | — | — |")
             continue
         n = len(sets)
-        weights = [s["weight_lbs"] for s in sets]
         reps_list = [s["reps"] for s in sets]
-        w = weights[0]
-        weight_str = f"{int(w) if w == int(w) else w} lbs" if len(set(weights)) == 1 else "varies"
+        weights = [s["weight_lbs"] for s in sets]
         reps_str = str(reps_list[0]) if len(set(reps_list)) == 1 else ", ".join(str(r) for r in reps_list)
+        weight_str = f"{int(weights[0]) if weights[0] == int(weights[0]) else weights[0]} lbs" if len(set(weights)) == 1 else ", ".join(f"{int(w) if w == int(w) else w} lbs" for w in weights)
         lines.append(f"| {ex['name']} | {n} | {reps_str} | {weight_str} |")
     return "\n".join(lines)
 
