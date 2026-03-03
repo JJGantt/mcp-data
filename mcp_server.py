@@ -475,7 +475,7 @@ async def list_tools() -> list[types.Tool]:
                 "Log one or more exercises to a workout session in a single call. "
                 "Pass an 'exercises' array (preferred) to log multiple at once. "
                 "Check get_workout_catalog first to match existing exercise names for consistency. "
-                "Returns the updated session table — display it to the user in your response."
+                "Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize."
             ),
             inputSchema={
                 "type": "object",
@@ -557,7 +557,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="update_exercise",
-            description="Update an exercise's sets in a workout session. Finds the exercise by name (case-insensitive) and replaces its sets. Returns the updated session table — display it to the user in your response.",
+            description="Update an exercise's sets in a workout session. Finds the exercise by name (case-insensitive) and replaces its sets. Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -587,7 +587,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="add_set",
-            description="Append a single set to an existing exercise in a workout session. If the exercise doesn't exist yet, creates it. Returns the updated session table — display it to the user in your response.",
+            description="Append a single set to an existing exercise in a workout session. If the exercise doesn't exist yet, creates it. Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -613,7 +613,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="remove_exercise",
-            description="Remove an exercise from a workout session by name (case-insensitive). Returns the updated session table — display it to the user in your response.",
+            description="Remove an exercise from a workout session by name (case-insensitive). Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -645,7 +645,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="update_session_notes",
-            description="Set or overwrite the notes field on a workout session. Pass an empty string to clear notes.",
+            description="Set or overwrite the notes field on a workout session. Pass an empty string to clear notes. Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize.",
             inputSchema={
                 "type": "object",
                 "properties": {
