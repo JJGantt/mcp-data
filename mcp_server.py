@@ -587,6 +587,32 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="add_set",
+            description="Append a single set to an existing exercise in a workout session. If the exercise doesn't exist yet, creates it. Returns the updated session table — display it to the user in your response.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID or 8-char prefix.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Exercise name (case-insensitive match).",
+                    },
+                    "weight_lbs": {
+                        "type": "number",
+                        "description": "Weight in lbs (use 0 for bodyweight).",
+                    },
+                    "reps": {
+                        "type": "integer",
+                        "description": "Number of reps.",
+                    },
+                },
+                "required": ["session_id", "name", "weight_lbs", "reps"],
+            },
+        ),
+        types.Tool(
             name="remove_exercise",
             description="Remove an exercise from a workout session by name (case-insensitive). Returns the updated session table — display it to the user in your response.",
             inputSchema={
@@ -990,6 +1016,30 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     "reps": int(s["reps"]),
                 })
             exercise["sets"] = sets
+            _save_workouts(data)
+        return _text(_format_session_table(session))
+
+    if name == "add_set":
+        async with _workouts_lock:
+            data = _load_workouts()
+            session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+            if not session:
+                return _text(f"Session not found: {arguments['session_id']}")
+            target = arguments["name"].strip()
+            exercise = None
+            for ex in session.get("exercises", []):
+                if ex["name"].lower() == target.lower():
+                    exercise = ex
+                    break
+            if not exercise:
+                exercise = {"id": str(uuid.uuid4()), "name": target, "sets": []}
+                session.setdefault("exercises", []).append(exercise)
+            set_num = len(exercise["sets"]) + 1
+            exercise["sets"].append({
+                "set_num": set_num,
+                "weight_lbs": float(arguments["weight_lbs"]),
+                "reps": int(arguments["reps"]),
+            })
             _save_workouts(data)
         return _text(_format_session_table(session))
 
