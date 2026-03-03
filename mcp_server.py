@@ -618,6 +618,24 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["session_id"],
             },
         ),
+        types.Tool(
+            name="update_session_notes",
+            description="Set or overwrite the notes field on a workout session. Pass an empty string to clear notes.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID or 8-char prefix.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Notes text to set. Overwrites any existing notes.",
+                    },
+                },
+                "required": ["session_id", "notes"],
+            },
+        ),
     ]
 
 
@@ -1003,6 +1021,16 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             data["sessions"].remove(session)
             _save_workouts(data)
         return _text(f"Deleted session {session['id'][:8]} ({session['type']} on {session['date'][:10]}).")
+
+    if name == "update_session_notes":
+        async with _workouts_lock:
+            data = _load_workouts()
+            session = _resolve_session(data["sessions"], arguments["session_id"].strip())
+            if not session:
+                return _text(f"Session not found: {arguments['session_id']}")
+            session["notes"] = arguments["notes"].strip()
+            _save_workouts(data)
+        return _text(_format_session_table(session))
 
     return _text(f"Unknown tool: {name}")
 
