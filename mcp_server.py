@@ -148,7 +148,11 @@ def _format_session_table(session: dict) -> str:
         reps_list = [s["reps"] for s in sets]
         weights = [s["weight_lbs"] for s in sets]
         reps_str = str(reps_list[0]) if len(set(reps_list)) == 1 else ", ".join(str(r) for r in reps_list)
-        weight_str = f"{int(weights[0]) if weights[0] == int(weights[0]) else weights[0]} lbs" if len(set(weights)) == 1 else ", ".join(f"{int(w) if w == int(w) else w} lbs" for w in weights)
+        def _fmt_weight(w):
+            if w == 0:
+                return "BW"
+            return f"{int(w) if w == int(w) else w} lbs"
+        weight_str = _fmt_weight(weights[0]) if len(set(weights)) == 1 else ", ".join(_fmt_weight(w) for w in weights)
         lines.append(f"| {ex['name']} | {n} | {reps_str} | {weight_str} |")
     return "\n".join(lines)
 
@@ -475,6 +479,8 @@ async def list_tools() -> list[types.Tool]:
                 "Log one or more exercises to a workout session in a single call. "
                 "Pass an 'exercises' array (preferred) to log multiple at once. "
                 "Check get_workout_catalog first to match existing exercise names for consistency. "
+                "For dumbbell exercises, weight_lbs is the TOTAL weight lifted — if the user says '30 lb dumbbells', log 60 lbs (both dumbbells combined). "
+                "For bodyweight exercises, use weight_lbs=0. "
                 "Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize."
             ),
             inputSchema={
@@ -587,7 +593,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="add_set",
-            description="Append a single set to an existing exercise in a workout session. If the exercise doesn't exist yet, creates it. Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize.",
+            description="Append a single set to an existing exercise in a workout session. If the exercise doesn't exist yet, creates it. For dumbbell exercises, weight_lbs is the TOTAL weight — if the user says '30 lb dumbbells', log 60 lbs. For bodyweight, use weight_lbs=0. Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize.",
             inputSchema={
                 "type": "object",
                 "properties": {
