@@ -39,7 +39,7 @@ from mcp.server import Server
 import mcp.server.stdio
 import mcp.types as types
 
-from config import LISTS_DIR, NOTES_DIR, REMINDERS_FILE, HEALTH_PROFILE, HEALTH_WORKOUTS
+from config import LISTS_DIR, NOTES_DIR, REMINDERS_FILE, HEALTH_PROFILE, HEALTH_WORKOUTS, RECIPES_FILE
 
 log = logging.getLogger(__name__)
 server = Server("data")
@@ -165,6 +165,62 @@ def _resolve_session(sessions: list, id_prefix: str) -> dict | None:
     if len(matches) == 1:
         return matches[0]
     return None
+
+
+def _load_recipes() -> dict:
+    if RECIPES_FILE.exists():
+        return json.loads(RECIPES_FILE.read_text())
+    return {"recipes": []}
+
+
+def _save_recipes(data: dict) -> None:
+    tmp = RECIPES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.rename(RECIPES_FILE)
+
+
+def _find_recipe(recipes: list, name: str) -> dict | None:
+    name_lower = name.strip().lower()
+    for r in recipes:
+        if r["name"].lower() == name_lower:
+            return r
+    return None
+
+
+def _format_recipe(r: dict) -> str:
+    lines = [f"## {r['name']}"]
+    if r.get("tags"):
+        lines.append(f"*Tags: {', '.join(r['tags'])}*")
+    lines.append("")
+    if r.get("ingredients"):
+        lines.append("**Ingredients:**")
+        for ing in r["ingredients"]:
+            qty = f"{ing['quantity']} {ing['unit']} " if ing.get("quantity") else ""
+            note = f" ({ing['notes']})" if ing.get("notes") else ""
+            lines.append(f"- {qty}{ing['item']}{note}")
+        lines.append("")
+    if r.get("steps"):
+        lines.append("**Instructions:**")
+        for i, step in enumerate(r["steps"], 1):
+            lines.append(f"{i}. {step}")
+        lines.append("")
+    if r.get("notes"):
+        lines.append(f"**Notes:** {r['notes']}")
+        lines.append("")
+    if r.get("nutrition"):
+        n = r["nutrition"]
+        parts = []
+        if n.get("calories") is not None:
+            parts.append(f"{n['calories']} cal")
+        if n.get("protein_g") is not None:
+            parts.append(f"{n['protein_g']}g protein")
+        if n.get("carbs_g") is not None:
+            parts.append(f"{n['carbs_g']}g carbs")
+        if n.get("fat_g") is not None:
+            parts.append(f"{n['fat_g']}g fat")
+        if parts:
+            lines.append(f"**Nutrition:** {', '.join(parts)}")
+    return "\n".join(lines)
 
 
 @server.list_tools()
@@ -667,6 +723,96 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["session_id", "notes"],
             },
         ),
+
+        # ── Recipes ──────────────────────────────────────────────────────────
+        types.Tool(
+            name="list_recipes",
+            description="List all saved recipes. Optionally filter by tag. Returns recipe names and tags.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "tag": {
+                        "type": "string",
+                        "description": "Optional tag to filter by (e.g. 'breakfast', 'high-protein').",
+                    },
+                },
+            },
+        ),
+        types.Tool(
+            name="get_recipe",
+            description="Get the full details of a recipe by name (case-insensitive match).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Recipe name."},
+                },
+                "required": ["name"],
+            },
+        ),
+        types.Tool(
+            name="save_recipe",
+            description=(
+                "Create or update a recipe. If a recipe with the same name exists, it is overwritten. "
+                "ingredients is a list of objects with fields: item (required), quantity (number, optional), "
+                "unit (optional), notes (optional). "
+                "steps is a list of instruction strings. "
+                "tags is an optional list of strings (e.g. ['breakfast', 'high-protein']). "
+                "nutrition is optional: {calories, protein_g, carbs_g, fat_g}."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Recipe name."},
+                    "ingredients": {
+                        "type": "array",
+                        "description": "List of ingredients.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "item": {"type": "string"},
+                                "quantity": {"type": "number"},
+                                "unit": {"type": "string"},
+                                "notes": {"type": "string"},
+                            },
+                            "required": ["item"],
+                        },
+                    },
+                    "steps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Step-by-step instructions.",
+                    },
+                    "notes": {"type": "string", "description": "Optional recipe-level notes."},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional tags for filtering (e.g. ['breakfast', 'high-protein']).",
+                    },
+                    "nutrition": {
+                        "type": "object",
+                        "description": "Optional nutrition info per serving.",
+                        "properties": {
+                            "calories": {"type": "number"},
+                            "protein_g": {"type": "number"},
+                            "carbs_g": {"type": "number"},
+                            "fat_g": {"type": "number"},
+                        },
+                    },
+                },
+                "required": ["name", "ingredients", "steps"],
+            },
+        ),
+        types.Tool(
+            name="delete_recipe",
+            description="Permanently delete a recipe by name (case-insensitive).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Recipe name."},
+                },
+                "required": ["name"],
+            },
+        ),
     ]
 
 
@@ -1086,6 +1232,60 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             session["notes"] = arguments["notes"].strip()
             _save_workouts(data)
         return _text(_format_session_table(session))
+
+    # ── Recipes ──────────────────────────────────────────────────────────────
+    if name == "list_recipes":
+        data = _load_recipes()
+        recipes = data["recipes"]
+        tag = arguments.get("tag", "").strip().lower() if arguments.get("tag") else None
+        if tag:
+            recipes = [r for r in recipes if tag in [t.lower() for t in r.get("tags", [])]]
+        if not recipes:
+            msg = f"No recipes found with tag '{tag}'." if tag else "No recipes saved yet."
+            return _text(msg)
+        lines = [f"**{r['name']}**" + (f" — {', '.join(r['tags'])}" if r.get("tags") else "") for r in recipes]
+        return _text(f"{len(recipes)} recipe(s):\n\n" + "\n".join(lines))
+
+    if name == "get_recipe":
+        data = _load_recipes()
+        r = _find_recipe(data["recipes"], arguments["name"])
+        if not r:
+            return _text(f"Recipe not found: {arguments['name']}")
+        return _text(_format_recipe(r))
+
+    if name == "save_recipe":
+        data = _load_recipes()
+        existing = _find_recipe(data["recipes"], arguments["name"])
+        now = _now()
+        recipe = {
+            "id": existing["id"] if existing else str(uuid.uuid4()),
+            "name": arguments["name"].strip(),
+            "ingredients": arguments.get("ingredients", []),
+            "steps": arguments.get("steps", []),
+            "notes": arguments.get("notes", ""),
+            "tags": arguments.get("tags", []),
+            "nutrition": arguments.get("nutrition"),
+            "created": existing["created"] if existing else now,
+            "updated": now,
+        }
+        if existing:
+            idx = data["recipes"].index(existing)
+            data["recipes"][idx] = recipe
+            action = "Updated"
+        else:
+            data["recipes"].append(recipe)
+            action = "Saved"
+        _save_recipes(data)
+        return _text(f"{action} recipe: {recipe['name']}\n\n" + _format_recipe(recipe))
+
+    if name == "delete_recipe":
+        data = _load_recipes()
+        r = _find_recipe(data["recipes"], arguments["name"])
+        if not r:
+            return _text(f"Recipe not found: {arguments['name']}")
+        data["recipes"].remove(r)
+        _save_recipes(data)
+        return _text(f"Deleted recipe: {r['name']}")
 
     return _text(f"Unknown tool: {name}")
 
