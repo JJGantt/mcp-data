@@ -39,7 +39,7 @@ from mcp.server import Server
 import mcp.server.stdio
 import mcp.types as types
 
-from config import LISTS_DIR, NOTES_DIR, REMINDERS_FILE, HEALTH_PROFILE, HEALTH_WORKOUTS, RECIPES_FILE
+from config import LISTS_DIR, NOTES_DIR, REMINDERS_FILE, HEALTH_PROFILE, HEALTH_WORKOUTS, RECIPES_FILE, NUTRITION_FILE
 
 log = logging.getLogger(__name__)
 server = Server("data")
@@ -220,6 +220,41 @@ def _format_recipe(r: dict) -> str:
             parts.append(f"{n['fat_g']}g fat")
         if parts:
             lines.append(f"**Nutrition:** {', '.join(parts)}")
+    return "\n".join(lines)
+
+
+def _load_nutrition() -> dict:
+    if NUTRITION_FILE.exists():
+        return json.loads(NUTRITION_FILE.read_text())
+    return {"entries": []}
+
+
+def _save_nutrition(data: dict) -> None:
+    tmp = NUTRITION_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.rename(NUTRITION_FILE)
+
+
+def _scale_nutrition(n: dict, qty: float) -> dict:
+    return {k: round(v * qty, 1) for k, v in n.items() if v is not None}
+
+
+def _format_nutrition_day(date: str, entries: list) -> str:
+    if not entries:
+        return f"No nutrition logged for {date}."
+    totals = {"calories": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
+    lines = [f"**Nutrition log — {date}**", "", "| Food | Qty | Cal | Protein | Carbs | Fat |", "|---|---|---|---|---|---|"]
+    for e in entries:
+        n = e.get("nutrition", {})
+        qty = e.get("quantity", 1.0)
+        qty_str = f"{qty:g}x" if qty != 1.0 else "1x"
+        lines.append(
+            f"| {e['name']} | {qty_str} | {n.get('calories', '?')} | {n.get('protein_g', '?')}g | {n.get('carbs_g', '?')}g | {n.get('fat_g', '?')}g |"
+        )
+        for k in totals:
+            totals[k] += n.get(k, 0) or 0
+    lines.append("|---|---|---|---|---|---|")
+    lines.append(f"| **Total** | | **{round(totals['calories'])}** | **{round(totals['protein_g'])}g** | **{round(totals['carbs_g'])}g** | **{round(totals['fat_g'])}g** |")
     return "\n".join(lines)
 
 
@@ -757,7 +792,9 @@ async def list_tools() -> list[types.Tool]:
                 "unit (optional), notes (optional). "
                 "steps is a list of instruction strings. "
                 "tags is an optional list of strings (e.g. ['breakfast', 'high-protein']). "
-                "nutrition is optional: {calories, protein_g, carbs_g, fat_g}."
+                "nutrition is REQUIRED: {calories, protein_g, carbs_g, fat_g}. "
+                "Each recipe represents one serving. Use your knowledge to fill in accurate nutrition values; "
+                "look them up if unsure. Never omit or approximate as zero unless the food genuinely has none."
             ),
             inputSchema={
                 "type": "object",
@@ -790,16 +827,17 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "nutrition": {
                         "type": "object",
-                        "description": "Optional nutrition info per serving.",
+                        "description": "Required nutrition info per serving.",
                         "properties": {
                             "calories": {"type": "number"},
                             "protein_g": {"type": "number"},
                             "carbs_g": {"type": "number"},
                             "fat_g": {"type": "number"},
                         },
+                        "required": ["calories", "protein_g", "carbs_g", "fat_g"],
                     },
                 },
-                "required": ["name", "ingredients", "steps"],
+                "required": ["name", "ingredients", "steps", "nutrition"],
             },
         ),
         types.Tool(
@@ -811,6 +849,71 @@ async def list_tools() -> list[types.Tool]:
                     "name": {"type": "string", "description": "Recipe name."},
                 },
                 "required": ["name"],
+            },
+        ),
+
+        # ── Nutrition ─────────────────────────────────────────────────────────
+        types.Tool(
+            name="log_nutrition",
+            description=(
+                "Log food eaten for a given date. Each entry has a name and optional quantity multiplier (default 1.0 = one full serving). "
+                "If the food matches a saved recipe, pull nutrition from it and scale by quantity. "
+                "For standalone foods (no recipe), include the nutrition values directly. "
+                "Always confirm what was logged by passing the result to the user as-is."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "date": {
+                        "type": "string",
+                        "description": "Date in YYYY-MM-DD format. Defaults to today if omitted.",
+                    },
+                    "items": {
+                        "type": "array",
+                        "description": "List of food items eaten.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "Food or recipe name."},
+                                "quantity": {"type": "number", "description": "Serving multiplier (default 1.0)."},
+                                "recipe": {"type": "string", "description": "Exact recipe name if this references a saved recipe."},
+                                "nutrition": {
+                                    "type": "object",
+                                    "description": "Required if not a saved recipe.",
+                                    "properties": {
+                                        "calories": {"type": "number"},
+                                        "protein_g": {"type": "number"},
+                                        "carbs_g": {"type": "number"},
+                                        "fat_g": {"type": "number"},
+                                    },
+                                },
+                            },
+                            "required": ["name"],
+                        },
+                    },
+                },
+                "required": ["items"],
+            },
+        ),
+        types.Tool(
+            name="get_nutrition",
+            description="Get the nutrition log for a given date, including a daily totals summary.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Date in YYYY-MM-DD format. Defaults to today."},
+                },
+            },
+        ),
+        types.Tool(
+            name="delete_nutrition_entry",
+            description="Remove a specific entry from the nutrition log by its ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Entry ID or 8-char prefix."},
+                },
+                "required": ["id"],
             },
         ),
     ]
@@ -1286,6 +1389,65 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         data["recipes"].remove(r)
         _save_recipes(data)
         return _text(f"Deleted recipe: {r['name']}")
+
+    # ── Nutrition ─────────────────────────────────────────────────────────────
+    if name == "log_nutrition":
+        from datetime import date as _date
+        day = (arguments.get("date") or str(_date.today())).strip()
+        data = _load_nutrition()
+        recipes_data = _load_recipes()
+        added = []
+        for item in arguments.get("items", []):
+            qty = float(item.get("quantity") or 1.0)
+            nutrition = item.get("nutrition")
+            # Try to pull from saved recipe if referenced
+            recipe_name = item.get("recipe")
+            if recipe_name:
+                r = _find_recipe(recipes_data["recipes"], recipe_name)
+                if r and r.get("nutrition"):
+                    nutrition = _scale_nutrition(r["nutrition"], qty)
+            elif not nutrition:
+                # Try matching by name
+                r = _find_recipe(recipes_data["recipes"], item["name"])
+                if r and r.get("nutrition"):
+                    nutrition = _scale_nutrition(r["nutrition"], qty)
+            if nutrition and qty != 1.0 and not item.get("recipe"):
+                nutrition = _scale_nutrition(nutrition, qty)
+            entry = {
+                "id": str(uuid.uuid4()),
+                "date": day,
+                "name": item["name"].strip(),
+                "quantity": qty,
+                "nutrition": nutrition or {},
+                "logged": _now(),
+            }
+            data["entries"].append(entry)
+            added.append(entry)
+        _save_nutrition(data)
+        day_entries = [e for e in data["entries"] if e["date"] == day]
+        return _text(_format_nutrition_day(day, day_entries))
+
+    if name == "get_nutrition":
+        from datetime import date as _date
+        day = (arguments.get("date") or str(_date.today())).strip()
+        data = _load_nutrition()
+        entries = [e for e in data["entries"] if e["date"] == day]
+        return _text(_format_nutrition_day(day, entries))
+
+    if name == "delete_nutrition_entry":
+        data = _load_nutrition()
+        prefix = arguments["id"].strip()
+        match = None
+        for e in data["entries"]:
+            if e["id"] == prefix or e["id"].startswith(prefix):
+                match = e
+                break
+        if not match:
+            return _text(f"Entry not found: {prefix}")
+        data["entries"].remove(match)
+        _save_nutrition(data)
+        day_entries = [e for e in data["entries"] if e["date"] == match["date"]]
+        return _text(f"Deleted: {match['name']}\n\n" + _format_nutrition_day(match["date"], day_entries))
 
     return _text(f"Unknown tool: {name}")
 
